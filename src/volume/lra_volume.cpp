@@ -17,7 +17,7 @@
 // GMP arbitrary-precision floats for the sampling / union bookkeeping. The
 // default (--gmp) path stores points and evaluates membership tests in mpf at a
 // precision derived from get_precision_from_cubes(); --fullgmp additionally runs
-// the billiard walk itself in this type (see gmp_billiard_walk.hpp).
+// the walk itself (billiard or ball) in this type (see gmp_walks.hpp).
 #include <boost/multiprecision/gmp.hpp>
 #include <boost/multiprecision/eigen.hpp>
 
@@ -27,11 +27,15 @@
 #include "logger.hpp"
 #include "sampling/sphere.hpp"
 #include "random_walks/uniform_billiard_walk.hpp"
+#include "random_walks/uniform_accelerated_billiard_walk.hpp"
+#include "random_walks/uniform_ball_walk.hpp"
+#include "random_walks/uniform_cdhr_walk.hpp"
+#include "random_walks/uniform_rdhr_walk.hpp"
 #include "random_walks/gaussian_ball_walk.hpp"
 #include "sampling/random_point_generators.hpp"
 #include "volume/sampling_policies.hpp"
 #include "volume/volume_cooling_gaussians.hpp"
-#include "volume/gmp_billiard_walk.hpp"
+#include "volume/gmp_walks.hpp"
 
 // cddlib (double precision) for polytope canonicalization, mirroring the
 // Python prototype's use of pycddlib (src/polytope_operations.py::canonicalize).
@@ -50,7 +54,7 @@ namespace
 using TermIndexMap = std::unordered_map<cvc5::Term, std::size_t>;
 
 // MpFloat (GMP float for the sampling / union bookkeeping) is defined in
-// gmp_billiard_walk.hpp; its runtime precision is set globally via
+// gmp_walks.hpp; its runtime precision is set globally via
 // MpFloat::default_precision(digits) before sampling starts.
 
 constexpr double kZeroTolerance = 1e-9;
@@ -763,7 +767,13 @@ VolumeComputationResult computeLraVolume(
   using VolumeRNG = BoostRandomNumberGenerator<boost::mt19937, double, 3>;
   // Sampling RNG matches the volesti `sample` tool: explicitly seeded.
   using SampleRNG = BoostRandomNumberGenerator<boost::mt19937, double>;
-  using SampleWalk = BilliardWalk::template Walk<HPolytope, SampleRNG>;
+  // Candidate sampling walks, selected at run time by options.samplerWalk.
+  using BilliardW = BilliardWalk::template Walk<HPolytope, SampleRNG>;
+  using AccelBilliardW =
+      AcceleratedBilliardWalk::template Walk<HPolytope, SampleRNG>;
+  using BallW = BallWalk::template Walk<HPolytope, SampleRNG>;
+  using RdhrW = RDHRWalk::template Walk<HPolytope, SampleRNG>;
+  using CdhrW = CDHRWalk::template Walk<HPolytope, SampleRNG>;
 
   // Algorithm parameters; defaults taken from the reference Python prototype
   // (src/cube_processor_nondis.py + src/global_storage.py).
@@ -870,10 +880,31 @@ VolumeComputationResult computeLraVolume(
     std::list<Point> samples;
     sampleRng.set_seed(kSeed);
     double samplingStart = Log.elapsed();
-    RandomPointGenerator<SampleWalk>::apply(hpoly, start,
-                                            static_cast<unsigned>(n),
-                                            sampleWalkLength, samples, policy,
-                                            sampleRng);
+    const unsigned nPts = static_cast<unsigned>(n);
+    switch (options.samplerWalk)
+    {
+      case SamplerWalk::AcceleratedBilliard:
+        RandomPointGenerator<AccelBilliardW>::apply(
+            hpoly, start, nPts, sampleWalkLength, samples, policy, sampleRng);
+        break;
+      case SamplerWalk::Ball:
+        RandomPointGenerator<BallW>::apply(
+            hpoly, start, nPts, sampleWalkLength, samples, policy, sampleRng);
+        break;
+      case SamplerWalk::RDHR:
+        RandomPointGenerator<RdhrW>::apply(
+            hpoly, start, nPts, sampleWalkLength, samples, policy, sampleRng);
+        break;
+      case SamplerWalk::CDHR:
+        RandomPointGenerator<CdhrW>::apply(
+            hpoly, start, nPts, sampleWalkLength, samples, policy, sampleRng);
+        break;
+      case SamplerWalk::Billiard:
+      default:
+        RandomPointGenerator<BilliardW>::apply(
+            hpoly, start, nPts, sampleWalkLength, samples, policy, sampleRng);
+        break;
+    }
     samplingTime = Log.elapsed() - samplingStart;
     std::vector<Eigen::VectorXd> out;
     out.reserve(samples.size());
@@ -883,6 +914,15 @@ VolumeComputationResult computeLraVolume(
     }
     return out;
   };
+
+  if (options.gmpMode == GmpMode::Full &&
+      options.samplerWalk != SamplerWalk::Billiard &&
+      options.samplerWalk != SamplerWalk::Ball)
+  {
+    Log(0) << "WARNING: --fullgmp only implements the billiard and ball walks; "
+              "ignoring the selected --sampler and using the GMP billiard walk"
+           << std::endl;
+  }
 
   switch (options.gmpMode)
   {
@@ -910,8 +950,11 @@ VolumeComputationResult computeLraVolume(
     }
     case GmpMode::Full:
     {
-      // Run the billiard walk itself in GMP.  The Chebyshev centre and inner
-      // radius (used to size the walk step) come from the double inner ball.
+      // Run the walk itself in GMP.  The Chebyshev centre and inner radius
+      // (used to size the walk step) come from the double inner ball.  Only the
+      // billiard and ball walks have GMP implementations; anything else was
+      // already warned about above and falls back to the GMP billiard walk.
+      const bool useBall = options.samplerWalk == SamplerWalk::Ball;
       auto generate =
           [&](const Eigen::MatrixXd& A, const Eigen::VectorXd& b, long long n,
               double& samplingTime) {
@@ -920,8 +963,11 @@ VolumeComputationResult computeLraVolume(
             Eigen::VectorXd center = ball.first.getCoefficients();
             double radius = ball.second;
             double samplingStart = Log.elapsed();
-            auto pts = sampleGmpBilliard(A, b, center, radius, n,
-                                         sampleWalkLength, kSeed);
+            auto pts = useBall
+                           ? sampleGmpBallWalk(A, b, center, radius, n,
+                                               sampleWalkLength, kSeed)
+                           : sampleGmpBilliard(A, b, center, radius, n,
+                                               sampleWalkLength, kSeed);
             samplingTime = Log.elapsed() - samplingStart;
             return pts;
           };

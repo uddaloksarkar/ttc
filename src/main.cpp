@@ -1254,6 +1254,11 @@ int main(int argc, char *argv[]) {
       ("walklen-samp", po::value<int>(),
        "Random-walk length for volesti point sampling (billiard walk); "
        "default 10")
+      ("sampler", po::value<std::string>(),
+       "Random walk used to sample uniform points from each polytope: "
+       "'billiard' (default), 'accel-billiard', 'ball', 'rdhr' "
+       "(random-directions hit-and-run), or 'cdhr' (coordinate-directions "
+       "hit-and-run). Note: --fullgmp only supports 'billiard'")
       ("no-cdd-simp",
        "Skip cddlib polytope canonicalization (redundant-constraint removal / "
        "implicit-equality detection) before volume and sampling")
@@ -2463,6 +2468,27 @@ int main(int argc, char *argv[]) {
         }
         volumeOptions.sampleWalkLength = wl;
       }
+      if (vm.count("sampler"))
+      {
+        std::string s = vm["sampler"].as<std::string>();
+        if (s == "billiard")
+          volumeOptions.samplerWalk = ttc::SamplerWalk::Billiard;
+        else if (s == "accel-billiard")
+          volumeOptions.samplerWalk = ttc::SamplerWalk::AcceleratedBilliard;
+        else if (s == "ball")
+          volumeOptions.samplerWalk = ttc::SamplerWalk::Ball;
+        else if (s == "rdhr")
+          volumeOptions.samplerWalk = ttc::SamplerWalk::RDHR;
+        else if (s == "cdhr")
+          volumeOptions.samplerWalk = ttc::SamplerWalk::CDHR;
+        else
+        {
+          std::cerr << "Error: --sampler must be one of billiard, "
+                       "accel-billiard, ball, rdhr, cdhr"
+                    << std::endl;
+          return 1;
+        }
+      }
       volumeOptions.cddSimplify = vm.count("no-cdd-simp") == 0;
       if (vm.count("nogmp") && vm.count("fullgmp"))
       {
@@ -2509,6 +2535,27 @@ int main(int argc, char *argv[]) {
         std::cout << volumeOptions.sampleWalkLength;
       else
         std::cout << "10";
+      std::cout << std::endl;
+      std::cout << "c sampler walk: ";
+      switch (volumeOptions.samplerWalk)
+      {
+        case ttc::SamplerWalk::AcceleratedBilliard:
+          std::cout << "accel-billiard";
+          break;
+        case ttc::SamplerWalk::Ball:
+          std::cout << "ball";
+          break;
+        case ttc::SamplerWalk::RDHR:
+          std::cout << "rdhr";
+          break;
+        case ttc::SamplerWalk::CDHR:
+          std::cout << "cdhr";
+          break;
+        case ttc::SamplerWalk::Billiard:
+        default:
+          std::cout << "billiard";
+          break;
+      }
       std::cout << std::endl;
       std::cout << "c cdd simplification: "
                 << (volumeOptions.cddSimplify ? "yes" : "no") << std::endl;

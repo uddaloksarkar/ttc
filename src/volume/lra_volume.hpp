@@ -46,6 +46,24 @@ enum class GmpMode
   Full
 };
 
+// Random-walk used by volesti to draw (approximately) uniform points from each
+// polytope during the union-volume estimation. Selected with --sampler.
+//   Billiard (default):    uniform_billiard_walk.hpp -- reflecting trajectories,
+//                          mixes fastest for H-polytopes.
+//   AcceleratedBilliard:   uniform_accelerated_billiard_walk.hpp.
+//   Ball:                  uniform_ball_walk.hpp -- classic ball walk.
+//   RDHR / CDHR:           random- / coordinate-directions hit-and-run.
+// Note: --fullgmp only implements the billiard walk; other choices fall back to
+// the billiard walk (with a warning) under --fullgmp.
+enum class SamplerWalk
+{
+  Billiard,
+  AcceleratedBilliard,
+  Ball,
+  RDHR,
+  CDHR
+};
+
 // Tunable knobs for the LRA volume engine. A negative walk length means "use
 // the volesti default" (volume: 10 + dim/10, sampling: 10).
 struct VolumeOptions
@@ -53,6 +71,7 @@ struct VolumeOptions
   int volumeWalkLength = -1;  // --walklen-vol N
   int sampleWalkLength = -1;  // --walklen-samp N
   bool cddSimplify = true;    // cleared by --no-cdd-simp
+  SamplerWalk samplerWalk = SamplerWalk::Billiard;  // --sampler
   GmpMode gmpMode = GmpMode::PointRepr;
   // GMP precision (decimal digits) for sampling. 0 => auto, derived from the
   // polytopes via get_precision_from_cubes (src/cube_processor_nondis.py).
