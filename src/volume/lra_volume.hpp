@@ -72,6 +72,13 @@ struct VolumeOptions
   int volumeWalkLength = -1;  // --walklen-vol N
   int sampleWalkLength = -1;  // --walklen-samp N
   bool cddSimplify = true;    // cleared by --no-cdd-simp
+  // Base seed for the sampling walks and the union-algorithm auxiliary RNG.
+  // Set from --seed, but only when the user passes it explicitly, so a run
+  // without the flag keeps the historical base seed (123) rather than picking
+  // up the CLI default (42).  Each polytope derives its own stream from this
+  // base (see lra_volume.cpp), so the walks are not replayed per polytope --
+  // which does mean estimates differ from pre-decorrelation runs at any seed.
+  unsigned seed = 123;  // --seed N
   SamplerWalk samplerWalk = SamplerWalk::Billiard;  // --sampler
   GmpMode gmpMode = GmpMode::PointRepr;
   // GMP precision (decimal digits) for sampling. 0 => auto, derived from the

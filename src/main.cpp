@@ -2452,6 +2452,13 @@ int main(int argc, char *argv[]) {
       auto realVars = parser.realVariables();
 
       ttc::VolumeOptions volumeOptions;
+      // --seed also drives the volume engine's sampling walks, but only when
+      // given explicitly: `defaulted()` keeps seedless runs on the historical
+      // base seed (123) rather than silently switching them to the CLI default.
+      if (!vm["seed"].defaulted())
+      {
+        volumeOptions.seed = static_cast<unsigned>(approxSeed);
+      }
       if (vm.count("walklen-vol"))
       {
         int wl = vm["walklen-vol"].as<int>();

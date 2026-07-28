@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -812,7 +813,20 @@ VolumeComputationResult computeLraVolume(
   // (src/cube_processor_nondis.py + src/global_storage.py).
   constexpr double kEpsilon = 0.8;
   constexpr double kDelta = 0.2;
-  constexpr unsigned kSeed = 123;
+  const unsigned kSeed = options.seed;
+  // Per-polytope sampling streams.  `generate` is invoked once per polytope by
+  // runUnionAlgorithm, and each invocation seeds its walk from scratch, so a
+  // single base seed would replay the identical direction sequence for every
+  // polytope and correlate the sample sets the union estimator combines.
+  // Derive a distinct stream per call instead, mixing with splitmix64 so
+  // consecutive polytopes do not get near-adjacent mt19937 states.
+  unsigned streamIndex = 0;
+  auto streamSeed = [&kSeed, &streamIndex]() {
+    std::uint64_t z = kSeed + 0x9E3779B97F4A7C15ULL * (++streamIndex);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return static_cast<unsigned>(z ^ (z >> 31));
+  };
   const double mvcEps = kEpsilon / 2.0;
   const double numCubes = static_cast<double>(polytopes.size());
   const double thresh = std::max(
@@ -919,7 +933,7 @@ VolumeComputationResult computeLraVolume(
     Point start = hpoly.ComputeInnerBall().first;
     PushBackWalkPolicy policy;
     std::list<Point> samples;
-    sampleRng.set_seed(kSeed);
+    sampleRng.set_seed(streamSeed());
     double samplingStart = Log.elapsed();
     const unsigned nPts = static_cast<unsigned>(n);
     switch (options.samplerWalk)
@@ -1003,26 +1017,29 @@ VolumeComputationResult computeLraVolume(
             Eigen::VectorXd center = ball.first.getCoefficients();
             double radius = ball.second;
             double samplingStart = Log.elapsed();
+            // One stream advance per polytope, drawn before the switch so the
+            // sequence of seeds does not depend on which walk is selected.
+            const unsigned walkSeed = streamSeed();
             std::vector<MpVector> pts;
             switch (walk)
             {
               case SamplerWalk::Ball:
                 pts = sampleGmpBallWalk(A, b, center, radius, n,
-                                        sampleWalkLength, kSeed);
+                                        sampleWalkLength, walkSeed);
                 break;
               case SamplerWalk::RDHR:
                 pts = sampleGmpRDHR(A, b, center, radius, n, sampleWalkLength,
-                                    kSeed);
+                                    walkSeed);
                 break;
               case SamplerWalk::CDHR:
                 pts = sampleGmpCDHR(A, b, center, radius, n, sampleWalkLength,
-                                    kSeed);
+                                    walkSeed);
                 break;
               case SamplerWalk::AcceleratedBilliard:
               case SamplerWalk::Billiard:
               default:
                 pts = sampleGmpBilliard(A, b, center, radius, n,
-                                        sampleWalkLength, kSeed);
+                                        sampleWalkLength, walkSeed);
                 break;
             }
             samplingTime = Log.elapsed() - samplingStart;
