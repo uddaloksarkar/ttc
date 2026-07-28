@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <list>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -58,6 +61,36 @@ using TermIndexMap = std::unordered_map<cvc5::Term, std::size_t>;
 // MpFloat::default_precision(digits) before sampling starts.
 
 constexpr double kZeroTolerance = 1e-9;
+
+// Write the polytope {x : A x <= b} to `path` in the cdd / Avis-Fukuda
+// H-representation format (readable by vinci, lrs, cddlib). Each cdd row is
+// [b_i, -a_i0, -a_i1, ...], encoding b_i - a_i . x >= 0, i.e. a_i . x <= b_i.
+void writePolytopeIne(const std::string& path, const Eigen::MatrixXd& A,
+                      const Eigen::VectorXd& b)
+{
+  std::ofstream out(path);
+  if (!out)
+  {
+    return;
+  }
+  const Eigen::Index rows = A.rows();
+  const Eigen::Index cols = A.cols();
+  out << "ttc_polytope\n";
+  out << "H-representation\n";
+  out << "begin\n";
+  out << " " << rows << " " << (cols + 1) << " real\n";
+  out << std::setprecision(17);
+  for (Eigen::Index i = 0; i < rows; ++i)
+  {
+    out << " " << b(i);
+    for (Eigen::Index j = 0; j < cols; ++j)
+    {
+      out << " " << -A(i, j);
+    }
+    out << "\n";
+  }
+  out << "end\n";
+}
 
 double parseRationalString(const std::string& value)
 {
@@ -808,6 +841,7 @@ VolumeComputationResult computeLraVolume(
   std::size_t numZeroVolume = 0;
   double totalVolumeTime = 0.0;
   long maxRawFacets = 0;  // for the GMP sampling precision (get_precision_from_cubes)
+  std::size_t dumpIndex = 0;  // running counter for --dump-ine file names
   for (const auto& poly : polytopes)
   {
     PolytopeMatrices matrices = buildPolytopeMatrices(poly, index, dimension);
@@ -825,6 +859,13 @@ VolumeComputationResult computeLraVolume(
     {
       ++numZeroVolume;
       continue;
+    }
+    if (!options.dumpInePrefix.empty())
+    {
+      std::string path = options.dumpInePrefix + "_cube" +
+                         std::to_string(++dumpIndex) + ".ine";
+      writePolytopeIne(path, matrices.A, matrices.b);
+      Log(1) << "wrote polytope to " << path << std::endl;
     }
     HPolytope hpoly(static_cast<unsigned>(dimension), matrices.A, matrices.b);
     if (hpoly.ComputeInnerBall().second <= 0.0)
@@ -916,11 +957,10 @@ VolumeComputationResult computeLraVolume(
   };
 
   if (options.gmpMode == GmpMode::Full &&
-      options.samplerWalk != SamplerWalk::Billiard &&
-      options.samplerWalk != SamplerWalk::Ball)
+      options.samplerWalk == SamplerWalk::AcceleratedBilliard)
   {
-    Log(0) << "WARNING: --fullgmp only implements the billiard and ball walks; "
-              "ignoring the selected --sampler and using the GMP billiard walk"
+    Log(0) << "WARNING: --fullgmp has no accelerated-billiard implementation; "
+              "using the GMP billiard walk instead"
            << std::endl;
   }
 
@@ -951,10 +991,10 @@ VolumeComputationResult computeLraVolume(
     case GmpMode::Full:
     {
       // Run the walk itself in GMP.  The Chebyshev centre and inner radius
-      // (used to size the walk step) come from the double inner ball.  Only the
-      // billiard and ball walks have GMP implementations; anything else was
-      // already warned about above and falls back to the GMP billiard walk.
-      const bool useBall = options.samplerWalk == SamplerWalk::Ball;
+      // (used to size the walk step) come from the double inner ball.  Billiard,
+      // ball, RDHR and CDHR have GMP implementations; accelerated-billiard was
+      // warned about above and falls back to the GMP billiard walk.
+      const SamplerWalk walk = options.samplerWalk;
       auto generate =
           [&](const Eigen::MatrixXd& A, const Eigen::VectorXd& b, long long n,
               double& samplingTime) {
@@ -963,11 +1003,28 @@ VolumeComputationResult computeLraVolume(
             Eigen::VectorXd center = ball.first.getCoefficients();
             double radius = ball.second;
             double samplingStart = Log.elapsed();
-            auto pts = useBall
-                           ? sampleGmpBallWalk(A, b, center, radius, n,
-                                               sampleWalkLength, kSeed)
-                           : sampleGmpBilliard(A, b, center, radius, n,
-                                               sampleWalkLength, kSeed);
+            std::vector<MpVector> pts;
+            switch (walk)
+            {
+              case SamplerWalk::Ball:
+                pts = sampleGmpBallWalk(A, b, center, radius, n,
+                                        sampleWalkLength, kSeed);
+                break;
+              case SamplerWalk::RDHR:
+                pts = sampleGmpRDHR(A, b, center, radius, n, sampleWalkLength,
+                                    kSeed);
+                break;
+              case SamplerWalk::CDHR:
+                pts = sampleGmpCDHR(A, b, center, radius, n, sampleWalkLength,
+                                    kSeed);
+                break;
+              case SamplerWalk::AcceleratedBilliard:
+              case SamplerWalk::Billiard:
+              default:
+                pts = sampleGmpBilliard(A, b, center, radius, n,
+                                        sampleWalkLength, kSeed);
+                break;
+            }
             samplingTime = Log.elapsed() - samplingStart;
             return pts;
           };

@@ -1,14 +1,15 @@
 #pragma once
 
-// Self-contained random walks (billiard and ball) in GMP (boost mpf_float)
-// arithmetic, used by the LRA volume engine's --fullgmp mode.  volesti's
-// templated walks cannot be instantiated on mpf_float without an extensive port
-// (boost.random does not support variable-precision floats, and several volesti
-// routines narrow NT to int/double), so we implement the walks directly here.
-// The geometry is the same one volesti uses (billiard reflection / ball-walk
-// accept-reject); only the arithmetic differs -- every dot product, reflection
-// and membership test runs at the configured mpf precision, so points near a
-// facet are placed without double cancellation.
+// Self-contained random walks (billiard, ball, and hit-and-run) in GMP (boost
+// mpf_float) arithmetic, used by the LRA volume engine's --fullgmp mode.
+// volesti's templated walks cannot be instantiated on mpf_float without an
+// extensive port (boost.random does not support variable-precision floats, and
+// several volesti routines narrow NT to int/double), so we implement the walks
+// directly here.  The geometry is the same one volesti uses (billiard
+// reflection / ball-walk accept-reject / hit-and-run chord sampling); only the
+// arithmetic differs -- every dot product, reflection, chord intersection and
+// membership test runs at the configured mpf precision, so points near a facet
+// are placed without double cancellation.
 
 #include <cstddef>
 #include <random>
@@ -230,6 +231,153 @@ inline std::vector<MpVector> sampleGmpBallWalk(const Eigen::MatrixXd& Ad,
       {
         p = y;
       }
+    }
+    out.push_back(p);
+  }
+  return out;
+}
+
+// Chord of the line {p + t v : t in R} inside {x : A x <= b}, as [tMin, tMax].
+// `av` = A v and `ap` = A p are precomputed.  Returns false if the chord is
+// empty/unbounded (degenerate direction) so the caller can skip the step.
+inline bool gmpLineChord(const MpVector& av, const MpVector& ap,
+                         const MpVector& bm, const MpFloat& eps, MpFloat& tMin,
+                         MpFloat& tMax)
+{
+  const Eigen::Index m = av.size();
+  bool haveMin = false, haveMax = false;
+  for (Eigen::Index i = 0; i < m; ++i)
+  {
+    // Row i requires t * av(i) <= bm(i) - ap(i).
+    if (av(i) > eps)  // upper bound on t
+    {
+      MpFloat t = (bm(i) - ap(i)) / av(i);
+      if (!haveMax || t < tMax) { tMax = t; haveMax = true; }
+    }
+    else if (av(i) < -eps)  // lower bound on t
+    {
+      MpFloat t = (bm(i) - ap(i)) / av(i);
+      if (!haveMin || t > tMin) { tMin = t; haveMin = true; }
+    }
+  }
+  return haveMin && haveMax && tMax > tMin;
+}
+
+// Draws `n` points from the random-directions hit-and-run walk (RDHRWalk in
+// volesti) inside {x : A x <= b}, in mpf arithmetic.  Each step picks a uniform
+// direction v, computes the chord [tMin, tMax] of {p + t v} within the polytope,
+// and jumps to a uniform point p + t v, t ~ U(tMin, tMax).  `innerRadius` is
+// unused (hit-and-run needs no step size); kept for a uniform call signature.
+inline std::vector<MpVector> sampleGmpRDHR(const Eigen::MatrixXd& Ad,
+                                           const Eigen::VectorXd& bd,
+                                           const Eigen::VectorXd& startCenter,
+                                           double /*innerRadius*/, long long n,
+                                           unsigned walkLength, unsigned seed)
+{
+  const Eigen::Index m = Ad.rows();
+  const Eigen::Index dim = Ad.cols();
+  std::vector<MpVector> out;
+  if (n <= 0 || m == 0 || dim == 0)
+  {
+    return out;
+  }
+
+  Eigen::Matrix<MpFloat, Eigen::Dynamic, Eigen::Dynamic> Am = Ad.cast<MpFloat>();
+  MpVector bm = bd.cast<MpFloat>();
+  const MpFloat eps("1e-12");
+
+  std::mt19937 rng(seed);
+  std::normal_distribution<double> ndist(0.0, 1.0);
+  std::uniform_real_distribution<double> udist(0.0, 1.0);
+
+  MpVector p = startCenter.cast<MpFloat>();
+  MpVector v(dim);
+  out.reserve(static_cast<std::size_t>(n));
+
+  auto sampleDirection = [&]() {
+    MpFloat sq(0);
+    for (Eigen::Index j = 0; j < dim; ++j)
+    {
+      v(j) = MpFloat(ndist(rng));
+      sq += v(j) * v(j);
+    }
+    MpFloat norm = sqrt(sq);
+    if (norm <= 0)
+    {
+      norm = MpFloat(1);
+    }
+    for (Eigen::Index j = 0; j < dim; ++j)
+    {
+      v(j) /= norm;
+    }
+  };
+
+  for (long long pt = 0; pt < n; ++pt)
+  {
+    for (unsigned step = 0; step < walkLength; ++step)
+    {
+      sampleDirection();
+      MpVector av = Am * v;
+      MpVector ap = Am * p;
+      MpFloat tMin(0), tMax(0);
+      if (!gmpLineChord(av, ap, bm, eps, tMin, tMax))
+      {
+        continue;  // degenerate direction; keep p and try again
+      }
+      MpFloat lambda = tMin + MpFloat(udist(rng)) * (tMax - tMin);
+      p += lambda * v;
+    }
+    out.push_back(p);
+  }
+  return out;
+}
+
+// Draws `n` points from the coordinate-directions hit-and-run walk (CDHRWalk in
+// volesti) inside {x : A x <= b}, in mpf arithmetic.  Identical to RDHR except
+// the direction is a uniformly chosen coordinate axis e_c, so the chord is
+// computed from column c of A.  `innerRadius` is unused.
+inline std::vector<MpVector> sampleGmpCDHR(const Eigen::MatrixXd& Ad,
+                                           const Eigen::VectorXd& bd,
+                                           const Eigen::VectorXd& startCenter,
+                                           double /*innerRadius*/, long long n,
+                                           unsigned walkLength, unsigned seed)
+{
+  const Eigen::Index m = Ad.rows();
+  const Eigen::Index dim = Ad.cols();
+  std::vector<MpVector> out;
+  if (n <= 0 || m == 0 || dim == 0)
+  {
+    return out;
+  }
+
+  Eigen::Matrix<MpFloat, Eigen::Dynamic, Eigen::Dynamic> Am = Ad.cast<MpFloat>();
+  MpVector bm = bd.cast<MpFloat>();
+  const MpFloat eps("1e-12");
+
+  std::mt19937 rng(seed);
+  std::uniform_real_distribution<double> udist(0.0, 1.0);
+  std::uniform_int_distribution<int> cdist(0, static_cast<int>(dim) - 1);
+
+  MpVector p = startCenter.cast<MpFloat>();
+  // ap = A p, maintained incrementally: only coordinate c changes per step.
+  MpVector ap = Am * p;
+  out.reserve(static_cast<std::size_t>(n));
+
+  for (long long pt = 0; pt < n; ++pt)
+  {
+    for (unsigned step = 0; step < walkLength; ++step)
+    {
+      const Eigen::Index c = static_cast<Eigen::Index>(cdist(rng));
+      // Chord along axis e_c: av is column c of A.
+      const MpVector av = Am.col(c);
+      MpFloat tMin(0), tMax(0);
+      if (!gmpLineChord(av, ap, bm, eps, tMin, tMax))
+      {
+        continue;
+      }
+      MpFloat t = tMin + MpFloat(udist(rng)) * (tMax - tMin);
+      p(c) += t;
+      ap += t * av;  // keep A p in sync with the single-coordinate move
     }
     out.push_back(p);
   }

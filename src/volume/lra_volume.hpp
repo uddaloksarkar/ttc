@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include <cvc5/cvc5.h>
@@ -76,6 +77,10 @@ struct VolumeOptions
   // GMP precision (decimal digits) for sampling. 0 => auto, derived from the
   // polytopes via get_precision_from_cubes (src/cube_processor_nondis.py).
   int precision = 0;  // --precision N
+  // If non-empty, write each canonicalized polytope to
+  // <dumpInePrefix>_cubeN.ine in the cdd/Avis-Fukuda H-representation format
+  // (readable by external volume tools such as vinci / lrs). --dump-ine PREFIX.
+  std::string dumpInePrefix;
 };
 
 VolumeComputationResult computeLraVolume(

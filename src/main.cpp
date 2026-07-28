@@ -1271,7 +1271,11 @@ int main(int argc, char *argv[]) {
        "the point bookkeeping). Slower; mutually exclusive with --nogmp")
       ("precision", po::value<int>(),
        "Override the GMP sampling precision (decimal digits). Default: auto, "
-       "ceil(8*dim*sqrt(log(facets)))");
+       "ceil(8*dim*sqrt(log(facets)))")
+      ("dump-ine", po::value<std::string>(),
+       "Write each canonicalized polytope to <PREFIX>_cubeN.ine in the cdd / "
+       "Avis-Fukuda H-representation format (readable by external volume tools "
+       "such as vinci and lrs), then continue with the normal computation");
 
   // Engine 4: uninterpreted-function counting -> SkolemFC. Counts the number of
   // interpretations of an uninterpreted function that satisfy the formula by
@@ -2511,6 +2515,10 @@ int main(int argc, char *argv[]) {
           return 1;
         }
         volumeOptions.precision = prec;
+      }
+      if (vm.count("dump-ine"))
+      {
+        volumeOptions.dumpInePrefix = vm["dump-ine"].as<std::string>();
       }
 
       print_section("options");
