@@ -642,16 +642,20 @@ class SampleStore
   std::vector<Vec> d_samples;
 };
 
-// Precision (decimal digits) for GMP sampling, mirroring the Python prototype's
-// get_precision_from_cubes (src/cube_processor_nondis.py):
-//   precision = ceil(8 * dim * sqrt(log(facet)))
-// where `facet` is the polytope's facet count and `dim` the real dimension.
+// Precision (decimal digits) for GMP sampling, following the Python prototype's
+// get_precision_from_cubes (src/cube_processor_nondis.py) scaled by the number
+// of polytopes in the union:
+//   precision = ceil(8 * dim * cubes * sqrt(log(facet)))
+// where `facet` is the polytope's facet count, `dim` the real dimension and
+// `cubes` the number of polytopes whose union is being measured.
 // (The Python caller passes a hard-coded dim=2; we use the true dimension, which
 // is the mathematically intended value.)  Clamped to >= 1.
-int precisionFromCubes(std::size_t dimension, long facetCount)
+int precisionFromCubes(std::size_t dimension, long facetCount,
+                       std::size_t numCubes)
 {
   double facet = std::max<double>(facetCount, 2.0);
-  double prec = std::ceil(8.0 * static_cast<double>(dimension)
+  double cubes = std::max<double>(static_cast<double>(numCubes), 1.0);
+  double prec = std::ceil(8.0 * static_cast<double>(dimension) * cubes
                           * std::sqrt(std::log(facet)));
   if (!std::isfinite(prec) || prec < 1.0)
   {
@@ -914,7 +918,8 @@ VolumeComputationResult computeLraVolume(
   // precision follows get_precision_from_cubes (overridable via --precision).
   int precision = options.precision > 0
                       ? options.precision
-                      : precisionFromCubes(dimension, maxRawFacets);
+                      : precisionFromCubes(dimension, maxRawFacets,
+                                           polytopes.size());
   result.samplingPrecision = precision;
   if (options.gmpMode != GmpMode::None)
   {
