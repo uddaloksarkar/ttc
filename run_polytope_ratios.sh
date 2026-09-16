@@ -24,6 +24,9 @@
 #   DOALARM   path to the doalarm binary (default: first existing one of
 #             ./doalarm, bins/doalarm, $SLURM_SUBMIT_DIR/bins/doalarm)
 #   NFILES    if >0, cap the number of benchmarks processed (default 0 = all)
+#   RATIOS_PY path to polytope_ratios.py (default: first existing one of
+#             ./polytope_ratios.py, scripts/polytope_ratios.py,
+#             $SLURM_SUBMIT_DIR/scripts/polytope_ratios.py)
 
 set -u
 
@@ -32,6 +35,23 @@ outdir="${2:-polytope_ratios_out}"
 ttc_bin="${TTC_BIN:-./ttc}"
 tlimit="${TLIMIT:-300}"
 nfiles="${NFILES:-0}"
+
+ratios_py="${RATIOS_PY:-}"
+if [[ -z "$ratios_py" ]]; then
+    for cand in ./polytope_ratios.py scripts/polytope_ratios.py \
+                "${SLURM_SUBMIT_DIR:-}/scripts/polytope_ratios.py"; do
+        if [[ -x "$cand" ]]; then
+            ratios_py="$cand"
+            break
+        fi
+    done
+fi
+if [[ -z "$ratios_py" ]]; then
+    echo "error: polytope_ratios.py not found (looked in ./polytope_ratios.py," \
+         "scripts/polytope_ratios.py, \$SLURM_SUBMIT_DIR/scripts/polytope_ratios.py);" \
+         "set RATIOS_PY=<path> to override" >&2
+    exit 1
+fi
 
 doalarm="${DOALARM:-}"
 if [[ -z "$doalarm" ]]; then
@@ -79,7 +99,7 @@ for f in "${files[@]}"; do
         continue   # already done -- lets the script be safely re-run to resume
     fi
     "$doalarm" -t real "$tlimit" \
-        ./polytope_ratios.py "$f" --ttc_bin "$ttc_bin" --csv "$csv" --quiet \
+        "$ratios_py" "$f" --ttc_bin "$ttc_bin" --csv "$csv" --quiet \
         > "$log" 2>&1
     rc=$?
     if [[ $rc -ne 0 ]]; then
@@ -103,7 +123,14 @@ for csv in "${outdir}"/per_file/*.csv; do
     fi
 done
 
-echo "done: $((${#files[@]} - ${#skipped[@]}))/${#files[@]} benchmarks written -> ${combined}"
+completed=$(( ${#files[@]} - ${#skipped[@]} ))
+echo "done: ${completed}/${#files[@]} benchmarks written -> ${combined}"
 if [[ ${#skipped[@]} -gt 0 ]]; then
     printf '  skipped: %s\n' "${skipped[@]}"
+fi
+if [[ ${completed} -eq 0 ]]; then
+    # every benchmark failed -- usually a broken dependency rather than N bad
+    # polytopes, so exit non-zero instead of leaving an empty CSV behind
+    echo "error: no benchmark produced any rows; ${combined} is empty" >&2
+    exit 1
 fi
