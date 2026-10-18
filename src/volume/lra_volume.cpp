@@ -65,6 +65,52 @@ using TermIndexMap = std::unordered_map<cvc5::Term, std::size_t>;
 
 constexpr double kZeroTolerance = 1e-9;
 
+// The intersection of one-sided coordinate bounds is a box. This deliberately
+// rejects coupled facets, unbounded boxes, and degenerate boxes; it is an
+// opt-in benchmark oracle, not a general polytope-volume algorithm.
+double exactAxisAlignedBoxVolume(const Eigen::MatrixXd& A,
+                                 const Eigen::VectorXd& b)
+{
+  const Eigen::Index dim = A.cols();
+  std::vector<double> lower(dim, -std::numeric_limits<double>::infinity());
+  std::vector<double> upper(dim, std::numeric_limits<double>::infinity());
+  for (Eigen::Index i = 0; i < A.rows(); ++i)
+  {
+    Eigen::Index axis = -1;
+    for (Eigen::Index j = 0; j < dim; ++j)
+    {
+      if (std::abs(A(i, j)) <= 1e-12) continue;
+      if (axis >= 0)
+        throw std::runtime_error("--exact-box-volumes requires axis-aligned box facets");
+      axis = j;
+    }
+    if (axis < 0)
+    {
+      if (b(i) < 0.0)
+        throw std::runtime_error("--exact-box-volumes found an infeasible box");
+      continue;
+    }
+    const double bound = b(i) / A(i, axis);
+    if (!std::isfinite(bound))
+      throw std::runtime_error("--exact-box-volumes found a nonfinite bound");
+    if (A(i, axis) > 0)
+      upper[axis] = std::min(upper[axis], bound);
+    else
+      lower[axis] = std::max(lower[axis], bound);
+  }
+  double volume = 1.0;
+  for (Eigen::Index j = 0; j < dim; ++j)
+  {
+    if (!std::isfinite(lower[j]) || !std::isfinite(upper[j]) ||
+        lower[j] >= upper[j])
+      throw std::runtime_error("--exact-box-volumes requires a bounded, positive box");
+    volume *= upper[j] - lower[j];
+  }
+  if (!std::isfinite(volume) || volume <= 0.0)
+    throw std::runtime_error("--exact-box-volumes exceeds finite double volume range");
+  return volume;
+}
+
 // Write the polytope {x : A x <= b} to `path` in the cdd / Avis-Fukuda
 // H-representation format (readable by vinci, lrs, cddlib). Each cdd row is
 // [b_i, -a_i0, -a_i1, ...], encoding b_i - a_i . x >= 0, i.e. a_i . x <= b_i.
@@ -1003,8 +1049,10 @@ VolumeComputationResult computeLraVolume(
       throw std::runtime_error("polytope has no finite inner radius");
     const double radius = outerRadius(matrices.A, matrices.b, innerBall.first.getCoefficients());
     double volumeComputeStart = Log.elapsed();
-    double volume = volume_cooling_gaussians<GaussianBallWalk, VolumeRNG>(
-        hpoly, mvcEps, volumeWalkLength);
+    double volume = options.exactBoxVolumes
+        ? exactAxisAlignedBoxVolume(matrices.A, matrices.b)
+        : volume_cooling_gaussians<GaussianBallWalk, VolumeRNG>(
+              hpoly, mvcEps, volumeWalkLength);
     double volumeComputeElapsed = Log.elapsed() - volumeComputeStart;
     totalVolumeTime += volumeComputeElapsed;
     Log(2) << "polytope volume " << volume << " (" << matrices.A.rows()
@@ -1016,7 +1064,8 @@ VolumeComputationResult computeLraVolume(
     const double upper = (1.0 + mvcEps) * std::pow(2.0 * radius, double(dimension));
     if (std::isnan(lower) || std::isnan(upper) || lower > upper)
       throw std::runtime_error("invalid polytope volume clipping bounds");
-    volume = std::clamp(volume, lower, upper);
+    if (!options.exactBoxVolumes)
+      volume = std::clamp(volume, lower, upper);
     if (!std::isfinite(volume) || volume <= 0.0)
       throw std::runtime_error("clipped polytope volume exceeds double range");
     minRadius = std::min(minRadius, innerBall.second);

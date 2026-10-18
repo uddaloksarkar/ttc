@@ -1254,6 +1254,8 @@ int main(int argc, char *argv[]) {
       ("walklen-samp", po::value<int>(),
        "Random-walk length for volesti point sampling (billiard walk); "
        "default 10")
+      ("exact-box-volumes",
+       "Use analytic volumes for axis-aligned boxes; reject non-box polytopes")
       ("sampler", po::value<std::string>(),
        "Random walk used to sample uniform points from each polytope: "
        "'billiard' (default), 'accel-billiard', 'ball', 'rdhr' "
@@ -2502,6 +2504,7 @@ int main(int argc, char *argv[]) {
         }
       }
       volumeOptions.cddSimplify = vm.count("no-cdd-simp") == 0;
+      volumeOptions.exactBoxVolumes = vm.count("exact-box-volumes") != 0;
       if (vm.count("nogmp") && vm.count("fullgmp"))
       {
         std::cerr << "Error: --nogmp and --fullgmp are mutually exclusive"
@@ -2575,6 +2578,9 @@ int main(int argc, char *argv[]) {
       std::cout << std::endl;
       std::cout << "c cdd simplification: "
                 << (volumeOptions.cddSimplify ? "yes" : "no") << std::endl;
+      std::cout << "c body volume oracle: "
+                << (volumeOptions.exactBoxVolumes ? "exact axis-aligned box"
+                                                   : "volesti estimate") << std::endl;
       std::cout << "c" << std::endl;
 
       print_section("volume computation");
