@@ -62,7 +62,7 @@ every selected input. The hit-and-run campaign has 40 inputs (800 commands);
 the ball-walk campaign has 137 (2,740 commands). It **only runs TTC**. Each
 rank takes a disjoint block, copies SMT2 files to scratch, and returns
 `<benchmark>_walk<length>.out.xz` and matching `.timeout.xz` files to its
-campaign directory. Existing `.out.xz` files are skipped. `TTC_BIN`,
+output directory. Existing `.out.xz` files are skipped. `TTC_BIN`,
 `SCRATCH`, and `TLIMIT_SECONDS` may be set in the environment. To inspect
 the generated first command without running TTC, set `DRY_RUN=1`.
 
@@ -73,8 +73,31 @@ repository root:
 python3 example/kakeya/samp_only/accumulate.py
 ```
 
-The current accumulator covers the historical `cases.csv` rows; extend it to
-the full 20-walk grid before analyzing newly added walks. It checks the xz
+To process one campaign directory, pass its path instead:
+
+```bash
+python3 example/kakeya/samp_only/accumulate.py example/kakeya/samp_only/hit_and_run
+```
+
+The sampler is inferred from a `ball_walk` or `hit_and_run` directory name.
+For a differently named directory, specify `--sampler ball_walk` or
+`--sampler hit_and_run`.
+
+Keep downloaded cluster outputs in `out_hit_and_run/` or `out_ball_walk/`
+beside their campaign directories. The accumulator reads the sibling
+campaign's `catalog.csv`, `cases.csv`, `measurements.csv`, and `benchmarks/`,
+then writes `combined_results.csv` and figures into that campaign directory.
+For example:
+
+```bash
+python3 example/kakeya/samp_only/accumulate.py example/kakeya/samp_only/out_hit_and_run
+```
+
+When given an output directory, it also includes compressed logs whose
+walk lengths are absent from `cases.csv`.
+
+The accumulator covers the historical `cases.csv` rows and any extra `.out.xz`
+files in a supplied output directory. It checks the xz
 stream, TTC exit footer and status, sampler and walk,
 exact-box oracle, body count, each body volume against the SMT2 box bounds,
 and the returned union estimate. It writes one `combined_results.csv` and refreshes

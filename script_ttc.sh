@@ -9,10 +9,13 @@ case "${1:-hit_and_run}" in
         ulimit -t unlimited
         project_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
         campaign_dir="${project_dir}/example/kakeya/samp_only/${campaign}"
+        # /project is read-only on compute nodes, so results go to a writable
+        # directory under the ttc root (project_dir keeps the /scratch path).
+        out_dir=${OUT_DIR:-${project_dir}/out_${campaign}}
         sampler=ball
         [[ "$campaign" == hit_and_run ]] && sampler=rdhr
         walklens=(5 10 18 34 65 124 236 449 853 1622 3083 5861 11143 21183 40271 76559 145544 276692 526015 1000000)
-        ttc_bin=${TTC_BIN:-${project_dir}/build_static/ttc}
+        ttc_bin=${TTC_BIN:-${project_dir}/ttc}
         tlimit=${TLIMIT_SECONDS:-1209600}
         job_id=${SLURM_JOB_ID:-local}
         rank=${OMPI_COMM_WORLD_RANK:-${SLURM_PROCID:-0}}
@@ -20,7 +23,7 @@ case "${1:-hit_and_run}" in
         workdir="${SCRATCH:-/tmp}/scratch/${job_id}_${rank}"
 
         [[ -x "$ttc_bin" ]] || { echo "TTC executable not found: $ttc_bin" >&2; exit 1; }
-        mkdir -p "$workdir"
+        mkdir -p "$workdir" "$out_dir"
         cd "$workdir" || exit 1
         cp -a "${campaign_dir}/benchmarks" .
         shopt -s nullglob
@@ -36,10 +39,10 @@ case "${1:-hit_and_run}" in
             for walk in "${walklens[@]}"; do
                 base="${benchmark%.smt2}_walk$(printf '%07d' "$walk")"
                 printf 'if [[ ! -f %q ]]; then /usr/bin/time --verbose -o %q timeout -k 2 %q %q %q --seed 42 --epsilon 0.2 --delta 0.2 --sampler %q --walklen-samp %q --exact-box-volumes > %q 2>&1; status=$?; printf "\\nrun_status=%%s\\n" "$status" >> %q; xz -f %q %q; cp %q %q %q; fi\n' \
-                    "${campaign_dir}/${base}.out.xz" "${base}.timeout" "$tlimit" \
+                    "${out_dir}/${base}.out.xz" "${base}.timeout" "$tlimit" \
                     "$ttc_bin" "$file" "$sampler" "$walk" \
                     "${base}.out" "${base}.out" "${base}.out" "${base}.timeout" \
-                    "${base}.out.xz" "${base}.timeout.xz" "$campaign_dir" >> todo
+                    "${base}.out.xz" "${base}.timeout.xz" "$out_dir" >> todo
                 numlines=$((numlines+1))
             done
         done
