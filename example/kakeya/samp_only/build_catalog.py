@@ -29,7 +29,8 @@ SOURCES = {
     ),
     "hit_and_run": (
         "hit_and_run/results.csv",
-        "hit_and_run/dimension_equals_bodies/results.csv",
+        "hit_and_run/dimension_results.csv",
+        "hit_and_run/dimension_pilot_results.csv",
     ),
 }
 
@@ -42,7 +43,9 @@ def input_file(row: dict[str, str], table: Path, root: Path) -> Path | None:
     name = row.get("benchmark") or row.get("path")
     if not name:
         name = f"benchmarks/{row.get('name', '')}.smt2"
-    candidates = [table.parent / name, root / name]
+    candidates = [root / "hit_and_run" / "benchmarks" / Path(name).name,
+                  root / "hit_and_run" / "unselected_benchmarks" / Path(name).name,
+                  table.parent / name, root / name]
     for candidate in candidates:
         if candidate.is_file() and candidate.suffix == ".smt2":
             return candidate
@@ -88,10 +91,6 @@ def build(sampler: str, root: Path) -> None:
     observed: dict[Path, list[dict[str, object]]] = defaultdict(list)
     planned: dict[Path, dict[int, str]] = defaultdict(dict)
     tables = list(SOURCES[sampler])
-    if sampler == "hit_and_run":
-        tables += [str(path.relative_to(root)) for path in
-                   sorted((root / "hit_and_run" / "dimension_equals_bodies")
-                          .glob("**/result*.csv"))]
     for relative in dict.fromkeys(tables):
         table = root / relative
         for row in read_csv(table):
@@ -125,9 +124,10 @@ def build(sampler: str, root: Path) -> None:
         digest = hashlib.sha256(source.read_bytes()).hexdigest()[:12]
         name = f"{source.stem}_{digest}.smt2"
         target = inputs / name
-        if target.exists() and target.read_bytes() != source.read_bytes():
-            raise ValueError(f"collision: {target}")
-        shutil.copy2(source, target)
+        if sampler == "ball_walk":
+            if target.exists() and target.read_bytes() != source.read_bytes():
+                raise ValueError(f"collision: {target}")
+            shutil.copy2(source, target)
         names[str(source)] = name
         catalog.append(dict(benchmark=name, bodies=cases[0]["bodies"],
                             dimension=cases[0]["dimension"],

@@ -75,6 +75,7 @@ struct VolumeOptions
   // Use the analytic product of side lengths for axis-aligned boxes. Reject
   // any non-box input instead of silently falling back to a volume estimate.
   bool exactBoxVolumes = false;  // --exact-box-volumes
+  bool exactParallelotopeVolumes = false;  // --exact-parallelotope-volumes
   // Base seed for the sampling walks and the union-algorithm auxiliary RNG.
   // Set from --seed, but only when the user passes it explicitly, so a run
   // without the flag keeps the historical base seed (123) rather than picking

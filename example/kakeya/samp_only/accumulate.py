@@ -1,22 +1,11 @@
 #!/usr/bin/env python3
-"""Validate compressed cluster logs, write one CSV, and regenerate figures.
-
-Figures (in <campaign>/figures):
-  walk_length_vs_relative_error_n3     observed epsilon against walk length w
-  walk_length_vs_relative_error_n_eq_m for n = 3 and n = m; hue is the family,
-                                       lightness the number of bodies m
-  boxes3d_early_<benchmark>            3D views of the 3D benchmarks with the
-  boxes3d_late_<benchmark>             most bodies: the earliest to reach
-                                       epsilon <= TARGET, and one that never
-                                       does; both share one stretched x2 scale
-
-Run from anywhere: python3 example/kakeya/samp_only/accumulate.py [directory]
-"""
+"""Validate compressed cluster logs and plot walk length versus relative error."""
 
 from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import lzma
 import re
 import sys
@@ -27,23 +16,45 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import LinearSegmentedColormap, LogNorm, Normalize
 from matplotlib.lines import Line2D
 
 sys.dont_write_bytecode = True
-from sunflower import PALETTE, STYLE, box_bounds, draw_boxes_3d, exact_box_volumes
+from sunflower import PALETTE, STYLE
+from hit_and_run.utility import exact_box_volumes
 
 HERE = Path(__file__).resolve().parent
 TARGET = 0.2
-INK, GRID = PALETTE["ink"], PALETTE["grid"]
-# Light -> dark ramp per family; a body count m gets the same step in each.
-FAMILIES = {name: PALETTE[name] for name in ("n3", "n_eq_m")}
+EXCLUDE_BOX_DENOMINATOR_FROM = 4_000_000
+INK = PALETTE["ink"]
+FAMILIES = {"n3": ("3D boxes", PALETTE["n3"][2]),
+            "n_eq_m": ("n=m boxes", PALETTE["n_eq_m"][2]),
+            "radial": ("radial urchins", PALETTE["radial"][2])}
 BODY_ROW = re.compile(r"^c\s+(\d+)\s+([0-9.eE+-]+)\s+(\d+)\s+(\d+)\s*$", re.M)
 ESTIMATE = re.compile(r"^s volume ([0-9.eE+-]+)\s*$", re.M)
 
 
 def read(path: Path) -> list[dict[str, str]]:
     return list(csv.DictReader(path.open(newline="")))
+
+
+def output_suffix(folder: Path, logs_folder: Path, sampler_name: str) -> str:
+    """Name artifacts after the cluster output directory's job ID."""
+    if logs_folder == folder:
+        return ""
+    prefix = f"out_{sampler_name}_"
+    if not logs_folder.name.startswith(prefix):
+        return ""
+    suffix = logs_folder.name[len(prefix):]
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", suffix):
+        raise ValueError(f"invalid output job ID: {logs_folder.name}")
+    return f"_{suffix}"
+
+
+def benchmark_path(folder: Path, name: str, meta: dict[str, str]) -> Path:
+    staged = folder / "benchmarks" / name
+    return staged if staged.is_file() else HERE / meta["original_path"]
 
 
 def validate(folder: Path, case: dict[str, str], meta: dict[str, str],
@@ -80,6 +91,38 @@ def validate(folder: Path, case: dict[str, str], meta: dict[str, str],
     return "0", f"{estimate:.17g}", f"{error:.17g}"
 
 
+def validate_radial(folder: Path, meta: dict[str, str], walk: int) -> tuple[str, str, str]:
+    log = folder / f"{Path(meta['benchmark']).stem}_walk{walk:07d}.out.xz"
+    if not log.exists():
+        return "pending", "", ""
+    try:
+        with lzma.open(log, "rt", errors="replace") as stream:
+            raw = stream.read()
+    except (OSError, lzma.LZMAError):
+        return "invalid_xz", "", ""
+    marker = re.findall(r"^run_status=(\S+)\s*$", raw, re.M)
+    if not marker or marker[-1] != "0":
+        return marker[-1] if marker else "invalid_output", "", ""
+    n = int(meta["bodies"])
+    expected = (f"c sample walk length: {walk}", "c sampler walk: rdhr",
+                "c body volume oracle: exact parallelepiped",
+                f"c polytopes: {n}", f"c real variables: {n}", "c exit 0")
+    rows, estimates = BODY_ROW.findall(raw), ESTIMATE.findall(raw)
+    if (any(item not in raw for item in expected) or len(rows) != n
+            or [int(row[0]) for row in rows] != list(range(1, n + 1))
+            or len(estimates) != 1):
+        return "invalid_output", "", ""
+    exact_body = float(Fraction(meta["exact_body_volume"]))
+    if any(abs(float(row[1]) - exact_body) > max(1e-6, abs(exact_body) * 1e-6)
+           for row in rows):
+        return "wrong_body_volume", "", ""
+    estimate = float(estimates[0])
+    if estimate <= 0:
+        return "invalid_estimate", "", ""
+    error = abs(estimate / float(Fraction(meta["exact_union_volume"])) - 1)
+    return "0", f"{estimate:.17g}", f"{error:.17g}"
+
+
 def accumulate(folder: Path, sampler_name: str, logs_folder: Path | None = None) -> None:
     logs_folder = logs_folder or folder
     sampler = "ball" if sampler_name == "ball_walk" else "rdhr"
@@ -88,9 +131,11 @@ def accumulate(folder: Path, sampler_name: str, logs_folder: Path | None = None)
              for row in read(folder / "measurements.csv")}
     volumes = {}
     for name, meta in catalog.items():
-        path = folder / "benchmarks" / name
+        path = benchmark_path(folder, name, meta)
         if not path.is_file():
             raise FileNotFoundError(path)
+        if hashlib.sha256(path.read_bytes()).hexdigest() != meta["sha256"]:
+            raise ValueError(f"benchmark content differs from catalog: {path}")
         if len(exact_box_volumes(path)) != int(meta["bodies"]):
             raise ValueError(f"body count mismatch: {path}")
         volumes[name] = exact_box_volumes(path)
@@ -101,6 +146,9 @@ def accumulate(folder: Path, sampler_name: str, logs_folder: Path | None = None)
         known_logs = {case["log_file"].replace(".log", ".out.xz")
                       for case in cases}
         for log in sorted(logs_folder.glob("*.out.xz")):
+            if sampler_name == "hit_and_run" and log.name.startswith("RDHR_radial_urchin_"):
+                # The radial family has its own exact-parallelepiped validator.
+                continue
             if log.name in known_logs:
                 continue
             match = re.fullmatch(r"(.+)_walk(\d+)\.out\.xz", log.name)
@@ -136,32 +184,46 @@ def accumulate(folder: Path, sampler_name: str, logs_folder: Path | None = None)
                             cluster_log_status=status,
                             compressed_log=(case["log_file"].replace(".log", ".out.xz")
                                             if status != "pending" else "")))
-    target = folder / "combined_results.csv"
-    temporary = folder / "combined_results.csv.tmp"
+    if sampler_name == "hit_and_run" and logs_folder != folder:
+        radial_geometry = folder / "radial_geometry.csv"
+        radial = read(radial_geometry)
+        walks = sorted(int(row["target_walk_length"]) for row in radial)
+        for meta in radial:
+            benchmark = meta["benchmark"]
+            if not (folder / "benchmarks" / benchmark).is_file():
+                raise FileNotFoundError(folder / "benchmarks" / benchmark)
+            for walk in walks:
+                status, estimate, error = validate_radial(logs_folder, meta, walk)
+                compressed = f"{Path(benchmark).stem}_walk{walk:07d}.out.xz"
+                results.append(dict(benchmark=benchmark, bodies=meta["bodies"],
+                                    dimension=meta["dimension"], walk_length=walk,
+                                    exact_union_volume=meta["exact_union_volume"],
+                                    estimated_union_volume=estimate,
+                                    relative_error=error,
+                                    fails_20pct=(int(float(error) > TARGET) if error else ""),
+                                    run_status=status,
+                                    evidence="compressed_ttc_log" if status == "0" else "",
+                                    cluster_log_status=status,
+                                    compressed_log=compressed if status != "pending" else ""))
+    suffix = output_suffix(folder, logs_folder, sampler_name)
+    target = folder / f"combined_results{suffix}.csv"
+    temporary = folder / f"combined_results{suffix}.csv.tmp"
     with temporary.open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=results[0])
         writer.writeheader()
         writer.writerows(results)
     temporary.replace(target)
-    draw(folder)
-    print(f"{folder}: {sum(row['run_status']=='0' for row in results)}/{len(results)} "
+    draw(folder, target, suffix, current_output_only=logs_folder != folder)
+    print(f"{target}: {sum(row['run_status']=='0' for row in results)}/{len(results)} "
           "validated cases")
 
 
-def family(bodies: int, dimension: int) -> str | None:
+def family(benchmark: str, bodies: int, dimension: int) -> str | None:
+    if benchmark.startswith("RDHR_radial_urchin_"):
+        return "radial"
     if dimension == 3 and bodies != 3:
         return "n3"
     return "n_eq_m" if dimension == bodies else None
-
-
-def walk_to_target(curve: list[tuple[int, float]]) -> int | None:
-    """Smallest tested w with epsilon <= TARGET there and at every longer w."""
-    reached = None
-    for walk, error in reversed(curve):
-        if error > TARGET:
-            break
-        reached = walk
-    return reached
 
 
 def save(fig, output: Path) -> None:
@@ -171,80 +233,135 @@ def save(fig, output: Path) -> None:
     plt.close(fig)
 
 
-def draw(folder: Path) -> None:
+def draw_hit_and_run(folder: Path, curves: dict[str, list[tuple[int, float]]],
+                     shape: dict[str, tuple[int, int]], suffix: str) -> None:
+    plt.rcParams.update({"font.size": 24, "axes.labelsize": 24})
+    radial = {name: points for name, points in curves.items()
+              if name.startswith("RDHR_radial_urchin_")}
+    boxes = {}
+    widths = {}
+    for name, points in curves.items():
+        if not name.startswith(("RDHR_box_", "RDHR_dimeqbody_", "RDHR_factored_")):
+            continue
+        if shape[name][1] < 3:
+            continue  # Two-dimensional boxes have no thin coordinate.
+        match = re.search(r"_d(\d+)_", name)
+        if match is None:
+            raise ValueError(f"box denominator missing from {name}")
+        denominator = int(match.group(1))
+        if denominator >= EXCLUDE_BOX_DENOMINATOR_FROM:
+            continue
+        boxes[name] = points
+        widths[name] = 2 / denominator
+    plotted = list(radial.values()) + list(boxes.values())
+    if not plotted:
+        return
+    walks = [walk for points in plotted for walk, _ in points]
+    xlimits = (min(walks), max(walks) * 1.1)
+    ymax = max(0.86, 1.05 * max(error for points in plotted for _, error in points))
+    output = folder / f"figures{suffix}"
+
+    def setup_axis(ax) -> None:
+        ax.axhspan(0, TARGET, facecolor="#edf7f2", zorder=0)
+        ax.axhline(TARGET, color="#303030", linewidth=1.8,
+                   linestyle=(0, (4, 3)), zorder=2)
+        ax.text(0.98, 0.95, rf"$\varepsilon={TARGET:g}$",
+                ha="right", va="top", color="#303030",
+                fontsize=24, fontweight="bold",
+                transform=ax.transAxes)
+        ax.set_xscale("log")
+        ax.set_xlim(*xlimits)
+        ax.set_ylim(0, ymax)
+        ax.set_xlabel("walk length")
+        ax.set_ylabel("relative error")
+        ax.tick_params(labelsize=24)
+        ax.grid(False)
+
+    if radial:
+        counts = {name: shape[name][0] for name in radial}
+        ramp = plt.get_cmap("YlOrBr")
+        cmap = LinearSegmentedColormap.from_list(
+            "radial_bodies", [ramp(0.35), ramp(0.94)])
+        norm = Normalize(vmin=min(counts.values()), vmax=max(counts.values()))
+        fig, ax = plt.subplots(figsize=(7.2, 5.1), layout="constrained")
+        for name in sorted(radial, key=lambda item: (counts[item], item)):
+            xs, ys = zip(*radial[name])
+            ax.plot(xs, ys, color=cmap(norm(counts[name])),
+                    linewidth=1.4, alpha=0.9, solid_capstyle="round", zorder=3)
+        setup_axis(ax)
+        colorbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), ax=ax,
+                                fraction=0.046, pad=0.035)
+        colorbar.set_label("bodies = dimensions", fontsize=24)
+        colorbar.ax.tick_params(labelsize=24)
+        colorbar.set_ticks([n for n in sorted(set(counts.values())) if n in
+                            (4, 8, 16, 24, 32, 40, 48, 56, 64, 72)])
+        save(fig, output / f"radial_walk_vs_relative_error{suffix}")
+
+    if boxes:
+        ramp = plt.get_cmap("Blues")
+        cmap = LinearSegmentedColormap.from_list(
+            "box_width", [ramp(0.96), ramp(0.31)])
+        norm = LogNorm(vmin=min(widths.values()), vmax=max(widths.values()))
+        fig, ax = plt.subplots(figsize=(7.2, 5.1), layout="constrained")
+        for name in sorted(boxes, key=lambda item: (widths[item], item)):
+            xs, ys = zip(*boxes[name])
+            ax.plot(xs, ys, color=cmap(norm(widths[name])),
+                    linewidth=1.4, alpha=0.9, solid_capstyle="round", zorder=3)
+        setup_axis(ax)
+        colorbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), ax=ax,
+                                fraction=0.046, pad=0.035)
+        colorbar.set_label("box width", fontsize=24)
+        colorbar.ax.tick_params(labelsize=24)
+        ticks = [tick for tick in (0.002, 0.02, 0.2, 2)
+                 if norm.vmin <= tick <= norm.vmax]
+        colorbar.set_ticks(ticks)
+        colorbar.set_ticklabels([f"{tick:g}" for tick in ticks])
+        save(fig, output / f"boxes_walk_vs_relative_error{suffix}")
+
+
+def draw(folder: Path, results_path: Path, suffix: str = "",
+         current_output_only: bool = False) -> None:
     plt.rcParams.update(STYLE)
     curves, shape = defaultdict(list), {}
-    for row in read(folder / "combined_results.csv"):
-        if row["run_status"] == "0" and row["relative_error"]:
+    for row in read(results_path):
+        if (row["run_status"] == "0" and row["relative_error"]
+                and (not current_output_only or row["evidence"] == "compressed_ttc_log")):
             curves[row["benchmark"]].append((int(row["walk_length"]),
                                              float(row["relative_error"])))
             shape[row["benchmark"]] = (int(row["bodies"]), int(row["dimension"]))
     for curve in curves.values():
         curve.sort()
-    levels = sorted({bodies for bodies, _ in shape.values()})
+    if not curves:
+        return
+    if folder.name == "hit_and_run":
+        draw_hit_and_run(folder, curves, shape, suffix)
+        return
     walks = [walk for curve in curves.values() for walk, _ in curve]
     top = 1.05 * max(error for curve in curves.values() for _, error in curve)
-
-    # One figure per family, with identical axes so they can be set side by side.
-    for name, ramp in FAMILIES.items():
-        members = sorted((b for b in curves if family(*shape[b]) == name),
-                         key=lambda b: shape[b])
-        if not members:
+    fig, ax = plt.subplots(figsize=(7.0, 4.2))
+    present = set()
+    for benchmark in sorted(curves):
+        group = family(benchmark, *shape[benchmark])
+        if group not in FAMILIES:
             continue
-        colormap = LinearSegmentedColormap.from_list(name, ramp)
-        color = {m: colormap(levels.index(m) / max(len(levels) - 1, 1)) for m in levels}
-        fig, ax = plt.subplots(figsize=(5.2, 3.6))
-        for benchmark in members:
-            xs, ys = zip(*curves[benchmark])
-            ax.plot(xs, ys, color=color[shape[benchmark][0]], linewidth=1.4, alpha=0.9)
-        ax.axhspan(0, TARGET, color=ramp[2], alpha=0.07, lw=0)
-        ax.axhline(TARGET, color=INK, linestyle=(0, (4, 3)), linewidth=0.9)
-        ax.text(1.0, TARGET, rf"$\varepsilon = {TARGET:g}$ ", color=INK, ha="right",
-                va="bottom", fontsize=8.5, transform=ax.get_yaxis_transform())
-        ax.set_xscale("log")
-        ax.set_xlim(min(walks) / 1.3, max(walks) * 1.3)
-        ax.set_ylim(0, top)
-        ax.grid(True, which="major", color=GRID, linewidth=0.6)
-        ax.set_axisbelow(True)
-        ax.set_xlabel(r"walk length $w$")
-        ax.set_ylabel(r"observed $\varepsilon$")
-        present = sorted({shape[b][0] for b in members})
-        ax.legend(handles=[Line2D([0], [0], color=color[m], linewidth=2,
-                                  label=rf"$m = {m}$") for m in present],
-                  loc="upper right", fontsize=8, ncol=1 if len(present) <= 5 else 2,
-                  handlelength=1.4, labelspacing=0.3, borderaxespad=0.2)
-        save(fig, folder / "figures" / f"walk_length_vs_relative_error_{name}")
-
-    # 3D views: among 3D benchmarks with the most bodies where one reaches
-    # the target and another never does, the earliest to reach it and the one
-    # that never does (tested to the longest walk; ties: highest final error).
-    # Without a never-reaching one, the latest to reach the target stands in.
-    reach = {b: walk_to_target(curves[b]) for b in curves if shape[b][1] == 3}
-    counts = sorted({shape[b][0] for b in reach}, reverse=True)
-    counts = ([m for m in counts if any(reach[b] for b in reach if shape[b][0] == m)
-               and any(not reach[b] for b in reach if shape[b][0] == m)]
-              or [m for m in counts if sum(bool(reach[b]) for b in reach
-                                           if shape[b][0] == m) > 1])
-    if not counts:
-        return
-    group = [b for b in reach if shape[b][0] == counts[0]]
-    met = sorted((reach[b], b) for b in group if reach[b])
-    never = [b for b in group if not reach[b]]
-    early = met[0][1]
-    late = (max(never, key=lambda b: curves[b][-1]) if never else met[-1][1])
-    for pattern in ("sunflower_early_*", "sunflower_late_*", "boxes3d_*"):
-        for stale in (folder / "figures").glob(pattern):
-            stale.unlink()
-    z_reach = max(abs(value) for benchmark in (early, late)
-                  for box in box_bounds(folder / "benchmarks" / benchmark)
-                  for value in box[2])
-    for label, benchmark in (("early", early), ("late", late)):
-        draw_boxes_3d(folder / "benchmarks" / benchmark, folder / "figures"
-                      / f"boxes3d_{label}_{Path(benchmark).stem}", z_reach)
-        walk = reach[benchmark]
-        print(f"{folder}: boxes3d_{label}: {benchmark} "
-              + (f"reaches epsilon <= {TARGET:g} at w = {walk}" if walk else
-                 f"ends at epsilon = {curves[benchmark][-1][1]:.3f}"))
+        present.add(group)
+        xs, ys = zip(*curves[benchmark])
+        ax.plot(xs, ys, color=FAMILIES[group][1], linewidth=1.05,
+                alpha=0.55 if group != "radial" else 0.65)
+    ax.axhline(TARGET, color=INK, linestyle=(0, (4, 3)), linewidth=0.9)
+    ax.text(1.0, TARGET, rf"$\varepsilon = {TARGET:g}$ ", color=INK,
+            ha="right", va="bottom", fontsize=8.5,
+            transform=ax.get_yaxis_transform())
+    ax.set_xscale("log")
+    ax.set_xlim(min(walks) / 1.3, max(walks) * 1.3)
+    ax.set_ylim(0, top)
+    ax.grid(False)
+    ax.set_xlabel(r"walk length $w$")
+    ax.set_ylabel("relative error")
+    ax.legend(handles=[Line2D([0], [0], color=FAMILIES[group][1], linewidth=2,
+                              label=FAMILIES[group][0]) for group in FAMILIES if group in present],
+              loc="upper center", bbox_to_anchor=(0.5, 1.11), ncol=len(present), fontsize=8)
+    save(fig, folder / f"figures{suffix}" / f"walk_length_vs_relative_error{suffix}")
 
 
 if __name__ == "__main__":
@@ -259,8 +376,11 @@ if __name__ == "__main__":
         if not input_folder.is_dir():
             parser.error(f"not a directory: {arguments.directory}")
         is_output_folder = input_folder.name.startswith("out_")
-        inferred_name = (input_folder.name[4:] if is_output_folder
-                         else input_folder.name)
+        output_match = re.fullmatch(r"out_(hit_and_run|ball_walk)_(?:[A-Za-z0-9_-]+)",
+                                    input_folder.name)
+        inferred_name = (output_match.group(1) if output_match else
+                         input_folder.name[4:] if is_output_folder else
+                         input_folder.name)
         sampler_name = inferred_name if arguments.sampler == "both" else arguments.sampler
         if sampler_name not in ("ball_walk", "hit_and_run"):
             parser.error("cannot infer sampler from directory name; pass --sampler")

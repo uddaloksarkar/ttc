@@ -4,20 +4,26 @@
 # This block is self-contained
 # so the per-campaign creator.sh files are not needed on the cluster.
 case "${1:-hit_and_run}" in
-    ball_walk|hit_and_run)
-        campaign="${1:-hit_and_run}"
+    ball_walk|hit_and_run|hit_and_run_radial)
+        requested_campaign="${1:-hit_and_run}"
+        campaign="$requested_campaign"
+        radial_only=false
+        if [[ "$requested_campaign" == hit_and_run_radial ]]; then
+            campaign=hit_and_run
+            radial_only=true
+        fi
         ulimit -t unlimited
         project_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
         campaign_dir="${project_dir}/example/kakeya/samp_only/${campaign}"
         # /project is read-only on compute nodes, so results go to a writable
         # directory under the ttc root (project_dir keeps the /scratch path).
-        out_dir=${OUT_DIR:-${project_dir}/out_${campaign}}
+        job_id=${SLURM_JOB_ID:-local}
+        out_dir="${OUT_DIR:-${project_dir}/out_${campaign}}_${job_id}"
         sampler=ball
         [[ "$campaign" == hit_and_run ]] && sampler=rdhr
         walklens=(5 10 18 34 65 124 236 449 853 1622 3083 5861 11143 21183 40271 76559 145544 276692 526015 1000000)
         ttc_bin=${TTC_BIN:-${project_dir}/ttc}
         tlimit=${TLIMIT_SECONDS:-1209600}
-        job_id=${SLURM_JOB_ID:-local}
         rank=${OMPI_COMM_WORLD_RANK:-${SLURM_PROCID:-0}}
         numthreads=${OMPI_COMM_WORLD_SIZE:-${SLURM_NTASKS:-1}}
         workdir="${SCRATCH:-/tmp}/scratch/${job_id}_${rank}"
@@ -26,21 +32,48 @@ case "${1:-hit_and_run}" in
         mkdir -p "$workdir" "$out_dir"
         cd "$workdir" || exit 1
         cp -a "${campaign_dir}/benchmarks" .
+        if [[ "$campaign" == hit_and_run && "$radial_only" == false ]]; then
+            # The catalog names the outputs; stage selected originals with those
+            # names only in scratch, without keeping duplicate repository files.
+            while IFS=, read -r benchmark bodies dimension sha original_path; do
+                [[ "$benchmark" == benchmark ]] && continue
+                original_path=${original_path%$'\r'}
+                source="${project_dir}/example/kakeya/samp_only/${original_path}"
+                [[ -f "$source" ]] || { echo "Benchmark not found: $source" >&2; exit 1; }
+                actual=$(sha256sum "$source")
+                [[ "${actual%% *}" == "$sha" ]] || {
+                    echo "Benchmark differs from catalog: $source" >&2; exit 1;
+                }
+                cp "$source" "benchmarks/$benchmark"
+            done < "${campaign_dir}/catalog.csv"
+        fi
         shopt -s nullglob
         rm -f todo
         touch todo
 
         numlines=0
+        if [[ "$campaign" == hit_and_run ]]; then
+            help_text=$("$ttc_bin" --help 2>&1)
+            [[ "$help_text" == *"exact-parallelotope-volumes"* ]] || {
+                echo "TTC binary lacks --exact-parallelotope-volumes; rebuild it" >&2
+                exit 1
+            }
+        fi
         for file in benchmarks/*.smt2; do
             benchmark=${file#benchmarks/}
-            # Hash-suffixed files are the selected campaign benchmarks; plain
-            # names in hit_and_run/benchmarks are older source inputs.
-            [[ "$benchmark" =~ _[0-9a-f]{12}\.smt2$ ]] || continue
+            if [[ "$benchmark" == RDHR_radial_urchin_*.smt2 ]]; then
+                oracle=--exact-parallelotope-volumes
+            else
+                [[ "$radial_only" == false ]] || continue
+                # Only selected catalog inputs are included alongside radial inputs.
+                [[ "$benchmark" =~ _[0-9a-f]{12}\.smt2$ ]] || continue
+                oracle=--exact-box-volumes
+            fi
             for walk in "${walklens[@]}"; do
                 base="${benchmark%.smt2}_walk$(printf '%07d' "$walk")"
-                printf 'if [[ ! -f %q ]]; then /usr/bin/time --verbose -o %q timeout -k 2 %q %q %q --seed 42 --epsilon 0.2 --delta 0.2 --sampler %q --walklen-samp %q --exact-box-volumes > %q 2>&1; status=$?; printf "\\nrun_status=%%s\\n" "$status" >> %q; xz -f %q %q; cp %q %q %q; fi\n' \
+                printf 'if [[ ! -f %q ]]; then /usr/bin/time --verbose -o %q timeout -k 2 %q %q %q --seed 42 --epsilon 0.2 --delta 0.2 --sampler %q --walklen-samp %q %q > %q 2>&1; status=$?; printf "\\nrun_status=%%s\\n" "$status" >> %q; xz -f %q %q; cp %q %q %q; fi\n' \
                     "${out_dir}/${base}.out.xz" "${base}.timeout" "$tlimit" \
-                    "$ttc_bin" "$file" "$sampler" "$walk" \
+                    "$ttc_bin" "$file" "$sampler" "$walk" "$oracle" \
                     "${base}.out" "${base}.out" "${base}.out" "${base}.timeout" \
                     "${base}.out.xz" "${base}.timeout.xz" "$out_dir" >> todo
                 numlines=$((numlines+1))
@@ -48,7 +81,7 @@ case "${1:-hit_and_run}" in
         done
 
         if [[ "${DRY_RUN:-0}" == 1 ]]; then
-            echo "Prepared ${numlines} cases for ${campaign}; first command:"
+            echo "Prepared ${numlines} cases for ${requested_campaign}; first command:"
             head -n 1 todo
             exit 0
         fi
@@ -60,13 +93,13 @@ case "${1:-hit_and_run}" in
             sed -i '1i#!/bin/bash' "todo_${i}.sh"
             chmod +x "todo_${i}.sh"
         done
-        echo "This is MPI exec number ${rank}; ${numlines} cases across ${numthreads} ranks"
+        echo "This is MPI exec number ${rank}; ${numlines} ${requested_campaign} cases across ${numthreads} ranks"
         ./"todo_${rank}.sh" > "rank_${rank}.log" 2>&1
         echo "Finished waiting rank ${rank}"
         exit 0
         ;;
     legacy) shift ;;
-    *) echo "Usage: $0 [hit_and_run|ball_walk|legacy]" >&2; exit 2 ;;
+    *) echo "Usage: $0 [hit_and_run|hit_and_run_radial|ball_walk|legacy]" >&2; exit 2 ;;
 esac
 
 # Legacy syntheticLRA sweep; reached only with the explicit "legacy" argument.

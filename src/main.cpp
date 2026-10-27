@@ -1256,6 +1256,8 @@ int main(int argc, char *argv[]) {
        "default 10")
       ("exact-box-volumes",
        "Use analytic volumes for axis-aligned boxes; reject non-box polytopes")
+      ("exact-parallelotope-volumes",
+       "Use determinant-based volumes for parallelepipeds; reject other polytopes")
       ("sampler", po::value<std::string>(),
        "Random walk used to sample uniform points from each polytope: "
        "'billiard' (default), 'accel-billiard', 'ball', 'rdhr' "
@@ -2505,6 +2507,13 @@ int main(int argc, char *argv[]) {
       }
       volumeOptions.cddSimplify = vm.count("no-cdd-simp") == 0;
       volumeOptions.exactBoxVolumes = vm.count("exact-box-volumes") != 0;
+      volumeOptions.exactParallelotopeVolumes =
+          vm.count("exact-parallelotope-volumes") != 0;
+      if (volumeOptions.exactBoxVolumes && volumeOptions.exactParallelotopeVolumes)
+      {
+        std::cerr << "Error: exact volume oracle options are mutually exclusive" << std::endl;
+        return 1;
+      }
       if (vm.count("nogmp") && vm.count("fullgmp"))
       {
         std::cerr << "Error: --nogmp and --fullgmp are mutually exclusive"
@@ -2580,7 +2589,8 @@ int main(int argc, char *argv[]) {
                 << (volumeOptions.cddSimplify ? "yes" : "no") << std::endl;
       std::cout << "c body volume oracle: "
                 << (volumeOptions.exactBoxVolumes ? "exact axis-aligned box"
-                                                   : "volesti estimate") << std::endl;
+                    : volumeOptions.exactParallelotopeVolumes
+                        ? "exact parallelepiped" : "volesti estimate") << std::endl;
       std::cout << "c" << std::endl;
 
       print_section("volume computation");

@@ -111,6 +111,67 @@ double exactAxisAlignedBoxVolume(const Eigen::MatrixXd& A,
   return volume;
 }
 
+// A parallelepiped is a box in independent linear coordinates y = N x.
+// Group opposite facet normals, recover each interval in y, then divide the
+// product of widths by |det N|. As with the box oracle, the analytic result is
+// represented as a double for the downstream sampler.
+double exactParallelotopeVolume(const Eigen::MatrixXd& A,
+                                const Eigen::VectorXd& b)
+{
+  struct Direction
+  {
+    Eigen::VectorXd normal;
+    double lower = -std::numeric_limits<double>::infinity();
+    double upper = std::numeric_limits<double>::infinity();
+  };
+  const Eigen::Index dim = A.cols();
+  std::vector<Direction> directions;
+  for (Eigen::Index i = 0; i < A.rows(); ++i)
+  {
+    Eigen::Index pivot;
+    const double scale = A.row(i).cwiseAbs().maxCoeff(&pivot);
+    if (scale <= 0.0 || !std::isfinite(scale))
+      throw std::runtime_error("exact parallelepiped oracle found a zero facet normal");
+    const double signedPivot = A(i, pivot);
+    const Eigen::VectorXd normal = A.row(i).transpose() / signedPivot;
+    const double bound = b(i) / signedPivot;
+    if (!std::isfinite(bound) || !normal.allFinite())
+      throw std::runtime_error("exact parallelepiped oracle found a nonfinite facet");
+    auto direction = std::find_if(directions.begin(), directions.end(),
+        [&](const Direction& item) {
+          return (item.normal - normal).lpNorm<Eigen::Infinity>() <= 1e-10;
+        });
+    if (direction == directions.end())
+    {
+      directions.push_back({normal});
+      direction = std::prev(directions.end());
+    }
+    if (signedPivot > 0.0)
+      direction->upper = std::min(direction->upper, bound);
+    else
+      direction->lower = std::max(direction->lower, bound);
+  }
+  if (static_cast<Eigen::Index>(directions.size()) != dim)
+    throw std::runtime_error("exact parallelepiped oracle requires one facet pair per dimension");
+  Eigen::MatrixXd N(dim, dim);
+  double boxVolume = 1.0;
+  for (Eigen::Index j = 0; j < dim; ++j)
+  {
+    const auto& direction = directions[j];
+    if (!std::isfinite(direction.lower) || !std::isfinite(direction.upper) ||
+        direction.lower >= direction.upper)
+      throw std::runtime_error("exact parallelepiped oracle requires bounded positive intervals");
+    N.row(j) = direction.normal.transpose();
+    boxVolume *= direction.upper - direction.lower;
+  }
+  const double determinant = std::abs(N.determinant());
+  const double volume = boxVolume / determinant;
+  if (!std::isfinite(determinant) || determinant <= 0.0 ||
+      !std::isfinite(volume) || volume <= 0.0)
+    throw std::runtime_error("exact parallelepiped oracle found singular or nonfinite geometry");
+  return volume;
+}
+
 // Write the polytope {x : A x <= b} to `path` in the cdd / Avis-Fukuda
 // H-representation format (readable by vinci, lrs, cddlib). Each cdd row is
 // [b_i, -a_i0, -a_i1, ...], encoding b_i - a_i . x >= 0, i.e. a_i . x <= b_i.
@@ -1051,6 +1112,8 @@ VolumeComputationResult computeLraVolume(
     double volumeComputeStart = Log.elapsed();
     double volume = options.exactBoxVolumes
         ? exactAxisAlignedBoxVolume(matrices.A, matrices.b)
+        : options.exactParallelotopeVolumes
+        ? exactParallelotopeVolume(matrices.A, matrices.b)
         : volume_cooling_gaussians<GaussianBallWalk, VolumeRNG>(
               hpoly, mvcEps, volumeWalkLength);
     double volumeComputeElapsed = Log.elapsed() - volumeComputeStart;
@@ -1064,7 +1127,7 @@ VolumeComputationResult computeLraVolume(
     const double upper = (1.0 + mvcEps) * std::pow(2.0 * radius, double(dimension));
     if (std::isnan(lower) || std::isnan(upper) || lower > upper)
       throw std::runtime_error("invalid polytope volume clipping bounds");
-    if (!options.exactBoxVolumes)
+    if (!options.exactBoxVolumes && !options.exactParallelotopeVolumes)
       volume = std::clamp(volume, lower, upper);
     if (!std::isfinite(volume) || volume <= 0.0)
       throw std::runtime_error("clipped polytope volume exceeds double range");
