@@ -1,7 +1,0 @@
-name,dimension,bodies,width,exact_body_volume,exact_union_volume,volume_walk_length,seed,path
-VOLANDSAMP_m8_w20_v1,4,8,20,160,1168,1,42,benchmarks/VOLANDSAMP_m8_w20_v1.smt2
-VOLANDSAMP_m8_w20_v50,4,8,20,160,1168,50,42,benchmarks/VOLANDSAMP_m8_w20_v50.smt2
-VOLANDSAMP_m10_w20_v50,5,10,20,320,2912,50,42,benchmarks/VOLANDSAMP_m10_w20_v50.smt2
-VOLANDSAMP_m12_w20_v50,6,12,20,640,6976,50,42,benchmarks/VOLANDSAMP_m12_w20_v50.smt2
-VOLANDSAMP_m16_w20_v50,8,16,20,2560,37120,50,42,benchmarks/VOLANDSAMP_m16_w20_v50.smt2
-VOLANDSAMP_m20_w20_v50,10,20,20,10240,185344,50,42,benchmarks/VOLANDSAMP_m20_w20_v50.smt2
