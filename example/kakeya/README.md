@@ -40,34 +40,55 @@ For hit-and-run, the optional modes are `box`, `staircase`, and `radial`. For ex
 `staircase --counts 8 --denominator 500` selects the eight-dimensional box
 case. Denominators of 4,000,000 or greater are excluded.
 
-## Run and analyze
+## Run one benchmark directly
 
-From the repository root, build TTC and run a sampler campaign under Slurm:
+Build TTC first. The commands below use `./ttc`, as in the top-level README, and
+are run from the repository root. They use seed 42, tolerance 0.2, and a
+five-step random-direction hit-and-run walk.
 
-```bash
-srun -n 8 bash script_ttc.sh hit_and_run
-srun -n 8 bash script_ttc.sh ball_walk
-```
-
-The hit-and-run campaign has 46 inputs and 20 walk lengths, for 920 jobs. The
-ball-walk campaign has 136 inputs and 20 walk lengths, for 2,720 jobs. Set
-`TTC_BIN`, `SCRATCH`, or `TLIMIT_SECONDS` if needed. The runner writes compressed
-logs to `<sampler>/out_<sampler>_<jobid>/` by default. To validate the
-job-2625803 output and regenerate its
-result table and figures:
+**Box example** (two 3D bodies):
 
 ```bash
-python3 example/kakeya/accumulate.py example/kakeya/hit_and_run/out_hit_and_run_2625803
+./ttc \
+  example/kakeya/hit_and_run/benchmarks/RDHR_box_m0002_d00000010_s0001.smt2 \
+  --seed 42 --epsilon 0.2 --delta 0.2 \
+  --sampler rdhr --walklen-samp 5 --exact-box-volumes
 ```
 
-The accumulator verifies each available compressed log, checks the exact body
-volume oracle, and writes `hit_and_run/combined_results_<jobid>.csv` and
-`<sampler>/figures_<jobid>/`. Ball-walk local figures go to
-`ball_walk/figures/`. Figures include the box and radial walk-length
-curves and one two-line benchmark-index comparison. For that comparison the
-target is `1000 * dimension`; when it exceeds the last validated walk, the
-plotted error uses that last walk. `fixed_walk_index_<jobid>.csv` records both
-walk lengths for every plotted benchmark.
+Its exact union volume is `796/5`, recorded in
+`hit_and_run/geometry.csv`. TTC prints its sampled union estimate on the
+`s volume` line. The exact-box flag supplies exact **body** volumes; TTC still
+estimates the volume of their union.
+
+**Sea urchin example** (four slanted bodies in four dimensions):
+
+```bash
+./ttc \
+  example/kakeya/hit_and_run/benchmarks/RDHR_radial_urchin_m0004_n0004.smt2 \
+  --seed 42 --epsilon 0.2 --delta 0.2 \
+  --sampler rdhr --walklen-samp 5 --exact-parallelotope-volumes
+```
+
+Its exact union volume is `849983697/3125000`, recorded in
+`hit_and_run/radial_geometry.csv`. For a box from `ball_walk/benchmarks/`, use
+`--sampler ball` with `--exact-box-volumes`. Other walk lengths can be passed
+with `--walklen-samp`.
+
+These one-off commands print to the terminal. `accumulate.py` expects the
+wrapped, compressed output format from the recorded campaign, so bare TTC
+stdout is not an input to it. To revalidate the existing job-2625803 logs and
+regenerate its result table and figures, run:
+
+```bash
+python3 example/kakeya/accumulate.py \
+  example/kakeya/hit_and_run/out_hit_and_run_2625803
+```
+
+The accumulator writes `hit_and_run/combined_results_2625803.csv` and
+`hit_and_run/figures_2625803/`. The benchmark-index figure uses the target
+walk `1000 * dimension`, capped at the last validated walk;
+`hit_and_run/fixed_walk_index_2625803.csv` records the plotted walk for each
+benchmark.
 
 To produce a geometry projection from a benchmark represented in an output
 directory:

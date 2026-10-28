@@ -10,19 +10,17 @@ A documentation on usage and building is available at https://arijitsh.github.io
 
 ## Reproduce the Kakeya benchmarks and figures
 
-See the [sampler-only README](example/kakeya/samp_only/README.md) for both
-samplers. The hit-and-run benchmark inventory, exact-volume generator, radial
-sea-urchin geometry, and cluster commands are documented in the
-[hit-and-run README](example/kakeya/samp_only/hit_and_run/README.md).
+See the [Kakeya README](example/kakeya/README.md) for the sampler-only
+benchmark inventory, exact volumes, generation, and direct TTC examples.
 
 From the repository root, regenerate and verify the hit-and-run inputs with:
 
 ```bash
-python3 example/kakeya/samp_only/hit_and_run/generate_benchmarks.py
+python3 example/kakeya/generate_benchmarks.py
 ```
 
-Current inputs live in `hit_and_run/benchmarks/` and
-`hit_and_run/unselected_benchmarks/`.
+Current inputs live in `example/kakeya/hit_and_run/benchmarks/` and
+`example/kakeya/ball_walk/benchmarks/`.
 
 ## Different Usage
 

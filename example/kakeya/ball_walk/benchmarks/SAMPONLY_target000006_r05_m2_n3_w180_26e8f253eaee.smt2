@@ -1,0 +1,23 @@
+(set-logic QF_LRA)
+(declare-fun x0 () Real)
+(declare-fun x1 () Real)
+(declare-fun x2 () Real)
+(assert (or
+  (and
+    (<= -90 x0)
+    (<= x0 90)
+    (<= -1 x1)
+    (<= x1 1)
+    (<= (- (/ 1 120)) x2)
+    (<= x2 (/ 1 120))
+  )
+  (and
+    (<= -1 x0)
+    (<= x0 1)
+    (<= -90 x1)
+    (<= x1 90)
+    (<= (- (/ 1 120)) x2)
+    (<= x2 (/ 1 120))
+  )
+))
+(check-sat)
